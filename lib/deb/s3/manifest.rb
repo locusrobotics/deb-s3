@@ -13,25 +13,29 @@ class Deb::S3::Manifest
   attr_accessor :architecture
   attr_accessor :fail_if_exists
   attr_accessor :skip_package_upload
+  attr_accessor :do_package_remove
 
   attr_accessor :files
 
   attr_reader :packages
   attr_reader :packages_to_be_upload
+  attr_reader :packages_to_be_deleted
 
   def initialize
     @packages = []
     @packages_to_be_upload = []
+    @packages_to_be_deleted = []
     @component = nil
     @architecture = nil
     @files = {}
     @cache_control = ""
     @fail_if_exists = false
     @skip_package_upload = false
+    @do_package_remove = true # TODO(pbovbel) false by default
   end
 
   class << self
-    def retrieve(codename, component, architecture, cache_control, fail_if_exists, skip_package_upload=false)
+    def retrieve(codename, component, architecture, cache_control, fail_if_exists, skip_package_upload=false, do_package_remove=false)
       m = if s = Deb::S3::Utils.s3_read("dists/#{codename}/#{component}/binary-#{architecture}/Packages")
         self.parse_packages(s)
       else
@@ -44,6 +48,7 @@ class Deb::S3::Manifest
       m.cache_control = cache_control
       m.fail_if_exists = fail_if_exists
       m.skip_package_upload = skip_package_upload
+      m.do_package_remove = do_package_remove
       m
     end
 
@@ -91,6 +96,7 @@ class Deb::S3::Manifest
         end
     }
     deleted = @packages - new_packages
+    packages_to_be_deleted.push(*deleted)
     @packages = new_packages
     deleted
   end
@@ -107,6 +113,14 @@ class Deb::S3::Manifest
       @packages_to_be_upload.each do |pkg|
         yield pkg.url_filename(@codename) if block_given?
         s3_store(pkg.filename, pkg.url_filename(@codename), 'application/octet-stream; charset=binary', self.cache_control, self.fail_if_exists)
+      end
+    end
+
+    if self.do_package_remove
+      # delete any packages that need to be deleted
+      @packages_to_be_deleted.each do |pkg|
+        yield pkg.url_filename(@codename) if block_given?
+        s3_remove(pkg.url_filename(@codename))
       end
     end
 
