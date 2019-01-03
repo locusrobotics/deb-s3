@@ -87,6 +87,7 @@ class Deb::S3::CLI < Thor
 
   class_option :sign,
   :type     => :string,
+  :lazy_default => "",
   :desc     => "GPG Sign the Release file when uploading a package, " +
     "or when verifying it after removing a package. " +
     "Use --sign with your GPG key ID to use a specific key (--sign=6643C242C18FE05B)."
@@ -95,6 +96,11 @@ class Deb::S3::CLI < Thor
   :default => "",
   :type    => :string,
   :desc    => "Additional command line options to pass to GPG when signing."
+
+  class_option :gpg_provider,
+  :default => "gpg",
+  :type    => :string,
+  :desc    => "GPG provider to use."
 
   class_option :encryption,
   :default  => false,
@@ -593,12 +599,13 @@ class Deb::S3::CLI < Thor
     settings[:endpoint] = options[:endpoint] if options[:endpoint]
     settings.merge!(provider)
 
-    Deb::S3::Utils.s3          = Aws::S3::Client.new(settings)
-    Deb::S3::Utils.bucket      = options[:bucket]
-    Deb::S3::Utils.signing_key = options[:sign]
-    Deb::S3::Utils.gpg_options = options[:gpg_options]
-    Deb::S3::Utils.prefix      = options[:prefix]
-    Deb::S3::Utils.encryption  = options[:encryption]
+    Deb::S3::Utils.s3           = Aws::S3::Client.new(settings)
+    Deb::S3::Utils.bucket       = options[:bucket]
+    Deb::S3::Utils.signing_key  = options[:sign]
+    Deb::S3::Utils.gpg_provider = options[:gpg_provider]
+    Deb::S3::Utils.gpg_options  = options[:gpg_options]
+    Deb::S3::Utils.prefix       = options[:prefix]
+    Deb::S3::Utils.encryption   = options[:encryption]
 
     # make sure we have a valid visibility setting
     Deb::S3::Utils.access_policy =
