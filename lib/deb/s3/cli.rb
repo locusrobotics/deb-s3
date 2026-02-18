@@ -562,6 +562,149 @@ class Deb::S3::CLI < Thor
   end
 
 
+  desc "delete-batch PACKAGES...",
+      "Batch delete many packages at once. Supply each as name or name=version."
+
+  option :arch,
+    :type     => :string,
+    :aliases  => "-a",
+    :desc     => "The architecture of the packages to remove."
+
+  option :lock,
+    :default  => false,
+    :type     => :boolean,
+    :aliases  => "-l",
+    :desc     => "Whether to lock the repository during updates."
+
+  option :do_package_remove,
+    :default  => false,
+    :type     => :boolean,
+    :desc     => "Whether to delete the underlying .deb files from S3."
+
+  def delete_batch(*pkg_args)
+    if pkg_args.nil? || pkg_args.empty?
+      error("You must specify at least one package, like: pkgA=1.2.3 pkgB pkgC=5.0.0")
+    end
+
+    arch = options[:arch]
+    if arch.nil?
+      error("You must specify --arch for batch deletion.")
+    end
+
+    configure_s3_client
+
+    # Parse package specifications
+    # { "pkgA" => ["1.2.3"], "pkgB" => nil (delete all versions), ... }
+    package_map = {}
+    pkg_args.each do |arg|
+      if arg.include?("=")
+        name, version = arg.split("=", 2)
+        package_map[name] ||= []
+        package_map[name] << version
+      else
+        package_map[arg] = nil
+      end
+    end
+
+    begin
+      if options[:lock]
+        log("Checking for existing lock file")
+        log("Locking repository for updates")
+        Deb::S3::Lock.lock(options[:codename], component, arch, options[:cache_control])
+        @lock_acquired = true
+      end
+
+      log("Retrieving existing manifests")
+      release = Deb::S3::Release.retrieve(options[:codename], options[:origin], options[:suite])
+
+      # Handle arch == all
+      target_arches =
+        if arch == "all"
+          release.architectures
+        else
+          [arch]
+        end
+
+      total_deleted = 0
+
+      target_arches.each do |ar|
+        manifest = Deb::S3::Manifest.retrieve(
+          options[:codename],
+          component,
+          ar,
+          options[:cache_control],
+          false,
+          options[:skip_package_upload],
+          options[:do_package_remove]
+        )
+
+        log("Processing batch deletion for arch #{ar}")
+
+        s3_objects_to_delete = []
+
+        package_map.each do |name, versions|
+          deleted = manifest.delete_package(name, versions)
+          if deleted.empty?
+            if versions.nil?
+              sublog("No entries found for #{name} in arch #{ar}.")
+            else
+              sublog("No entries of #{name} versions #{versions.join(', ')} found in arch #{ar}.")
+            end
+            next
+          end
+
+          deleted.each do |p|
+            total_deleted += 1
+            sublog("Deleting #{p.name} version #{p.full_version} from arch #{ar}")
+
+            if options[:do_package_remove]
+              s3_objects_to_delete << p.url_filename(options[:codename])
+            end
+          end
+        end
+
+        # Update manifests if necessary
+        if total_deleted > 0
+          log("Uploading updated manifests to S3 (arch #{ar})")
+          manifest.write_to_s3 { |f| sublog("Transferring #{f}") }
+          release.update_manifest(manifest)
+          release.write_to_s3 { |f| sublog("Transferring #{f}") }
+        end
+
+        # Delete .deb files from S3
+        if options[:do_package_remove] && !s3_objects_to_delete.empty?
+          log("Batch removing #{s3_objects_to_delete.length} S3 objects for arch #{ar}")
+          batch_delete_s3_objects(s3_objects_to_delete)
+        end
+      end
+
+      if total_deleted == 0
+        error("No packages were deleted. Nothing matched the provided arguments.")
+      else
+        log("Batch delete complete. #{total_deleted} package entries removed.")
+      end
+
+    ensure
+      if options[:lock] && @lock_acquired
+        Deb::S3::Lock.unlock(options[:codename], component, arch, options[:cache_control])
+        log("Lock released.")
+      end
+    end
+  end
+
+  no_commands do
+    def batch_delete_s3_objects(keys)
+      keys.each_slice(1000) do |chunk|
+        sublog("Deleting #{chunk.length} objects...")
+        chunk.each do |key|
+          Deb::S3::Utils.s3_remove(key)
+        end
+      end
+    end
+  end
+
+
+
   desc "verify", "Verifies that the files in the package manifests exist"
 
   option :fix_manifests,
