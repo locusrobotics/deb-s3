@@ -14,6 +14,8 @@ class Deb::S3::Manifest
   attr_accessor :fail_if_exists
   attr_accessor :skip_package_upload
   attr_accessor :do_package_remove
+  attr_accessor :upload_threads
+  attr_accessor :check_existing_before_upload
 
   attr_accessor :files
 
@@ -32,6 +34,8 @@ class Deb::S3::Manifest
     @fail_if_exists = false
     @skip_package_upload = false
     @do_package_remove = true # TODO(pbovbel) false by default
+    @upload_threads = 1
+    @check_existing_before_upload = true
   end
 
   class << self
@@ -109,10 +113,50 @@ class Deb::S3::Manifest
     manifest = self.generate
 
     unless self.skip_package_upload
-      # store any packages that need to be stored
-      @packages_to_be_upload.each do |pkg|
-        yield pkg.url_filename(@codename) if block_given?
-        s3_store(pkg.filename, pkg.url_filename(@codename), 'application/octet-stream; charset=binary', self.cache_control, self.fail_if_exists)
+      # Store package files; optionally parallelize the S3 upload work.
+      if self.upload_threads.to_i > 1 && @packages_to_be_upload.length > 1
+        pending = @packages_to_be_upload.dup
+        mutex = Mutex.new
+        errors = []
+
+        workers = Array.new(self.upload_threads.to_i) do
+          Thread.new do
+            loop do
+              pkg = mutex.synchronize { pending.pop }
+              break if pkg.nil?
+
+              begin
+                yield pkg.url_filename(@codename) if block_given?
+                s3_store(
+                  pkg.filename,
+                  pkg.url_filename(@codename),
+                  'application/octet-stream; charset=binary',
+                  self.cache_control,
+                  self.fail_if_exists,
+                  self.check_existing_before_upload,
+                )
+              rescue StandardError => e
+                mutex.synchronize { errors << e }
+                break
+              end
+            end
+          end
+        end
+
+        workers.each(&:join)
+        raise errors.first unless errors.empty?
+      else
+        @packages_to_be_upload.each do |pkg|
+          yield pkg.url_filename(@codename) if block_given?
+          s3_store(
+            pkg.filename,
+            pkg.url_filename(@codename),
+            'application/octet-stream; charset=binary',
+            self.cache_control,
+            self.fail_if_exists,
+            self.check_existing_before_upload,
+          )
+        end
       end
     end
 

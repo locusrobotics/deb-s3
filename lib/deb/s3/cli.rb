@@ -153,6 +153,16 @@ class Deb::S3::CLI < Thor
   :desc     => "Whether to skip all package uploads." +
     "This is useful when hosting .deb files outside of the bucket."
 
+  option :upload_threads,
+  :default  => 1,
+  :type     => :numeric,
+  :desc     => "Number of worker threads to use for package object uploads."
+
+  option :skip_existing_check,
+  :default  => false,
+  :type     => :boolean,
+  :desc     => "Skip per-package S3 HEAD checks before upload for faster transfers."
+
   def upload(*files)
     if files.nil? || files.empty?
       error("You must specify at least one file to upload")
@@ -246,6 +256,8 @@ class Deb::S3::CLI < Thor
       # upload the manifest
       log("Uploading packages and new manifests to S3")
       manifests.each_value do |manifest|
+        manifest.upload_threads = [options[:upload_threads].to_i, 1].max
+        manifest.check_existing_before_upload = !options[:skip_existing_check]
         begin
           manifest.write_to_s3 { |f| sublog("Transferring #{f}") }
         rescue Deb::S3::Utils::AlreadyExistsError => e

@@ -73,9 +73,10 @@ module Deb::S3::Utils
     nil
   end
 
-  def s3_store(path, filename=nil, content_type='application/octet-stream; charset=binary', cache_control=nil, fail_if_exists=false)
+  def s3_store(path, filename=nil, content_type='application/octet-stream; charset=binary', cache_control=nil, fail_if_exists=false, check_existing=true)
     filename = File.basename(path) unless filename
-    obj = s3_exists?(filename)
+    obj = false
+    obj = s3_exists?(filename) if check_existing || fail_if_exists
 
     file_md5 = Digest::MD5.file(path)
 
